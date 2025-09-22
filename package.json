@@ -1,5 +1,5 @@
 {
-  "name": "hello-cdk",
+  "name": "bussines-time",
   "version": "0.1.0",
   "bin": {
     "bussines-time-cdk": "bin/business-time-api.js"
