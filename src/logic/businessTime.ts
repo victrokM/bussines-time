@@ -1,13 +1,6 @@
-import { DateTime } from 'luxon';
-
+import { DateTime } from "luxon";
 import { HolidaysProvider } from "./types";
-
-const TZ = "America/Bogota";
-
-const MORNING_START = 8 * 60;
-const MORNING_END = 12 * 60;
-const AFTERNOON_START = 13 * 60;
-const AFTERNOON_END = 17 * 60;
+import { BusinessTime } from "../enums/BussinesTime";
 
 export interface BusinessClockDeps {
   holidays: HolidaysProvider;
@@ -15,15 +8,14 @@ export interface BusinessClockDeps {
 
 export class BusinessClock {
   constructor(private deps: BusinessClockDeps) {}
-
   private async isHoliday(dt: DateTime): Promise<boolean> {
     const set = await this.deps.holidays.getHolidaysISO();
-    const key = dt.setZone(TZ).toFormat("yyyy-LL-dd");
+    const key = dt.setZone(BusinessTime.TZ).toFormat("yyyy-LL-dd");
     return set.has(key);
   }
 
   private async isBusinessDay(dt: DateTime): Promise<boolean> {
-    const local = dt.setZone(TZ);
+    const local = dt.setZone(BusinessTime.TZ);
     const weekday = local.weekday;
     if (weekday >= 6) return false;
     if (await this.isHoliday(local)) return false;
@@ -31,86 +23,96 @@ export class BusinessClock {
   }
 
   private minutesOfDay(dt: DateTime): number {
-    const local = dt.setZone(TZ);
+    const local = dt.setZone(BusinessTime.TZ);
     return local.hour * 60 + local.minute;
   }
 
   private withMinutesOfDay(base: DateTime, minutes: number): DateTime {
-    const local = base.setZone(TZ);
+    const local = base.setZone(BusinessTime.TZ);
     const h = Math.floor(minutes / 60);
     const m = minutes % 60;
     return local.set({ hour: h, minute: m, second: 0, millisecond: 0 });
   }
 
-  public async normalizeToPrevWorkInstant(start: DateTime): Promise<DateTime> {
-    let cur = start.setZone(TZ);
-
-    // Retroceder hasta día hábil
+  private async findPrevBusinessDay(dt: DateTime): Promise<DateTime> {
+    let cur = dt.minus({ days: 1 });
     while (!(await this.isBusinessDay(cur))) {
-      cur = cur.minus({ days: 1 }).set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
-    }
-
-    const mod = this.minutesOfDay(cur);
-    if (mod >= AFTERNOON_END) {
-      return this.withMinutesOfDay(cur, AFTERNOON_END);
-    }
-    if (mod >= MORNING_END && mod < AFTERNOON_START) {
-      return this.withMinutesOfDay(cur, MORNING_END); 
-    }
-    if (mod < MORNING_START) {
-      let prev = cur.minus({ days: 1 });
-      while (!(await this.isBusinessDay(prev))) {
-        prev = prev.minus({ days: 1 });
-      }
-      return prev.set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
-    }
-    return cur.set({ second: 0, millisecond: 0 });
-  }
-
-  private async nextBusinessDaySameTime(dt: DateTime): Promise<DateTime> {
-    let cur = dt.setZone(TZ).plus({ days: 1 });
-    while (!(await this.isBusinessDay(cur))) {
-      cur = cur.plus({ days: 1 });
-    }
-
-    const mod = this.minutesOfDay(cur);
-    if (mod >= MORNING_END && mod < AFTERNOON_START) {
-      return cur.set({ hour: 12, minute: 0, second: 0, millisecond: 0 });
+      cur = cur.minus({ days: 1 });
     }
     return cur;
   }
 
-  private async nextWorkSegmentStart(dt: DateTime): Promise<DateTime> {
-    const mod = this.minutesOfDay(dt);
-    if (mod < MORNING_START) {
-      return this.withMinutesOfDay(dt, MORNING_START);
-    }
-    if (mod >= MORNING_START && mod < MORNING_END) {
-      return dt;
-    }
-    if (mod >= MORNING_END && mod < AFTERNOON_START) {
-      return this.withMinutesOfDay(dt, AFTERNOON_START);
-    }
-    if (mod >= AFTERNOON_START && mod < AFTERNOON_END) {
-      return dt;
-    }
+  private async findNextBusinessDay(dt: DateTime): Promise<DateTime> {
     let cur = dt.plus({ days: 1 });
     while (!(await this.isBusinessDay(cur))) {
       cur = cur.plus({ days: 1 });
     }
-    return cur.set({ hour: 8, minute: 0, second: 0, millisecond: 0 });
-  }
-
-  public async addBusinessDays(localStart: DateTime, days: number): Promise<DateTime> {
-    let cur = localStart.setZone(TZ);
-    for (let i = 0; i < days; i++) {
-      cur = await this.nextBusinessDaySameTime(cur);
-    }
     return cur;
   }
 
+  public async normalizeToPrevWorkInstant(start: DateTime): Promise<DateTime> {
+    let cur = start.setZone(BusinessTime.TZ);
+    while (!(await this.isBusinessDay(cur))) {
+      cur = (await this.findPrevBusinessDay(cur)).set({
+        hour: 17,
+        minute: 0,
+        second: 0,
+        millisecond: 0,
+      });
+    }
+
+    const mod = this.minutesOfDay(cur);
+
+    if (mod >= BusinessTime.AFTERNOON_END) {
+      return this.withMinutesOfDay(cur, BusinessTime.AFTERNOON_END);
+    }
+
+    if (mod >= BusinessTime.MORNING_END && mod < BusinessTime.AFTERNOON_START) {
+      return this.withMinutesOfDay(cur, BusinessTime.MORNING_END);
+    }
+
+    if (mod < BusinessTime.MORNING_START) {
+      const prev = await this.findPrevBusinessDay(cur);
+      return prev.set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
+    }
+
+    return cur.set({ second: 0, millisecond: 0 });
+  }
+
+  private async nextWorkSegmentStart(dt: DateTime): Promise<DateTime> {
+    const mod = this.minutesOfDay(dt);
+
+    if (mod < BusinessTime.MORNING_START) {
+      return this.withMinutesOfDay(dt, BusinessTime.MORNING_START);
+    }
+    if (mod >= BusinessTime.MORNING_START && mod < BusinessTime.MORNING_END) {
+      return dt.set({ second: 0, millisecond: 0 });
+    }
+    if (mod >= BusinessTime.MORNING_END && mod < BusinessTime.AFTERNOON_START) {
+      return this.withMinutesOfDay(dt, BusinessTime.AFTERNOON_START);
+    }
+    if (mod >= BusinessTime.AFTERNOON_START && mod < BusinessTime.AFTERNOON_END) {
+      return dt.set({ second: 0, millisecond: 0 });
+    }
+
+    const next = await this.findNextBusinessDay(dt);
+    return this.withMinutesOfDay(next, BusinessTime.MORNING_START);
+  }
+
+  public async addBusinessDays(localStart: DateTime, days: number): Promise<DateTime> {
+    let cur = localStart.setZone(BusinessTime.TZ);
+    const targetMinutes = this.minutesOfDay(cur);
+
+    for (let i = 0; i < days; i++) {
+      cur = await this.findNextBusinessDay(cur);
+    }
+    let placed = this.withMinutesOfDay(cur, targetMinutes);
+    placed = await this.normalizeToPrevWorkInstant(placed);
+    return placed;
+  }
+
   public async addBusinessMinutes(localStart: DateTime, minutes: number): Promise<DateTime> {
-    let cur = localStart.setZone(TZ);
+    let cur = localStart.setZone(BusinessTime.TZ);
     let remaining = minutes;
 
     while (remaining > 0) {
@@ -118,29 +120,27 @@ export class BusinessClock {
       const mod = this.minutesOfDay(cur);
 
       let segEnd = 0;
-      if (mod >= MORNING_START && mod < MORNING_END) segEnd = MORNING_END;
-      else if (mod >= AFTERNOON_START && mod < AFTERNOON_END) segEnd = AFTERNOON_END;
-      else if (mod >= MORNING_END && mod < AFTERNOON_START) {
-        cur = this.withMinutesOfDay(cur, AFTERNOON_START);
-        continue;
-      } else if (mod >= AFTERNOON_END) {
-        cur = await this.nextWorkSegmentStart(cur);
-        continue;
+      if (mod >= BusinessTime.MORNING_START && mod < BusinessTime.MORNING_END) {
+        segEnd = BusinessTime.MORNING_END;
+      } else if (mod >= BusinessTime.AFTERNOON_START && mod < BusinessTime.AFTERNOON_END) {
+        segEnd = BusinessTime.AFTERNOON_END;
       } else {
-        cur = this.withMinutesOfDay(cur, MORNING_START);
+        cur = await this.nextWorkSegmentStart(cur);
         continue;
       }
 
       const capacity = segEnd - mod;
       const consume = Math.min(capacity, remaining);
+
       cur = cur.plus({ minutes: consume });
       remaining -= consume;
 
       if (remaining > 0 && consume === capacity) {
-        if (segEnd === MORNING_END) {
-          cur = this.withMinutesOfDay(cur, AFTERNOON_START);
-        } else if (segEnd === AFTERNOON_END) {
-          cur = await this.nextWorkSegmentStart(cur);
+        if (segEnd === BusinessTime.MORNING_END) {
+          cur = this.withMinutesOfDay(cur, BusinessTime.AFTERNOON_START);
+        } else {
+          const next = await this.findNextBusinessDay(cur);
+          cur = this.withMinutesOfDay(next, BusinessTime.MORNING_START);
         }
       }
     }
@@ -156,15 +156,23 @@ export class BusinessClock {
     days: number;
     hours: number;
   }): Promise<DateTime> {
+    if (!Number.isInteger(days) || !Number.isInteger(hours) || days < 0 || hours < 0) {
+      throw new Error("Days and hours must be positive integers");
+    }
+    if (days === 0 && hours === 0) {
+      throw new Error("At least one of days or hours must be provided");
+    }
+
     const baseLocal = utcInput
-      ? utcInput.setZone(TZ)
-      : DateTime.now().setZone(TZ);
+      ? utcInput.setZone(BusinessTime.TZ)
+      : DateTime.now().setZone(BusinessTime.TZ);
 
-    let t = await this.normalizeToPrevWorkInstant(baseLocal);
+    let normalize = await this.normalizeToPrevWorkInstant(baseLocal);
 
-    if (days > 0) t = await this.addBusinessDays(t, days);
-    if (hours > 0) t = await this.addBusinessMinutes(t, hours * 60);
+    if (days > 0) normalize = await this.addBusinessDays(normalize, days);
 
-    return t;
+    if (hours > 0) normalize = await this.addBusinessMinutes(normalize, hours * 60);
+
+    return normalize;
   }
 }
